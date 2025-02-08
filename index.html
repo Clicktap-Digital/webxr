@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>WebXR Video Player</title>
+    <style>
+        body { margin: 0; }
+        canvas { width: 100%; height: 100%; }
+        #startAR { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); }
+    </style>
+</head>
+<body>
+    <button id="startAR">Start AR</button>
+    <script type="module">
+        import * as THREE from 'https://unpkg.com/three@0.132.2/build/three.module.js';
+
+        let container;
+        let camera, scene, renderer;
+        let controller;
+        let reticle;
+        let video, videoTexture, videoMesh;
+        let isVideoPlaced = false;
+        let hitTestSource = null;
+        let hitTestSourceRequested = false;
+
+        init();
+        animate();
+
+        function init() {
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
+            
+            // Create video element
+            video = document.createElement('video');
+            video.src = "video.mp4";
+            video.loop = true;
+            video.muted = true;
+            videoTexture = new THREE.VideoTexture(video);
+            
+            const geometry = new THREE.PlaneGeometry(1, 0.5625); // 16:9 aspect ratio
+            const material = new THREE.MeshBasicMaterial({ map: videoTexture });
+            videoMesh = new THREE.Mesh(geometry, material);
+            videoMesh.visible = false;
+            scene.add(videoMesh);
+
+            // Create reticle
+            const reticleGeometry = new THREE.RingGeometry(0.15, 0.2, 32);
+            const reticleMaterial = new THREE.MeshBasicMaterial();
+            reticle = new THREE.Mesh(reticleGeometry, reticleMaterial);
+            reticle.matrixAutoUpdate = false;
+            reticle.visible = false;
+            scene.add(reticle);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.xr.enabled = true;
+            document.body.appendChild(renderer.domElement);
+
+            // AR Button
+            document.getElementById('startAR').addEventListener('click', () => {
+                navigator.xr.requestSession('immersive-ar', {
+                    requiredFeatures: ['hit-test']
+                }).then(onSessionStarted);
+            });
+
+            // Touch/Mouse events
+            renderer.domElement.addEventListener('touchstart', onTouchStart, false);
+            renderer.domElement.addEventListener('touchmove', onTouchMove, false);
+            renderer.domElement.addEventListener('mousedown', onMouseDown, false);
+            renderer.domElement.addEventListener('mousemove', onMouseMove, false);
+        }
+
+        function onSessionStarted(session) {
+            session.addEventListener('end', onSessionEnded);
+            renderer.xr.setSession(session);
+            
+            controller = renderer.xr.getController(0);
+            controller.addEventListener('select', onSelect);
+            scene.add(controller);
+        }
+
+        function onSessionEnded() {
+            hitTestSourceRequested = false;
+            hitTestSource = null;
+        }
+
+        function onSelect() {
+            if (reticle.visible && !isVideoPlaced) {
+                videoMesh.position.setFromMatrixPosition(reticle.matrix);
+                videoMesh.visible = true;
+                video.play();
+                isVideoPlaced = true;
+            }
+        }
+
+        let lastTouch = { x: 0, y: 0 };
+        function onTouchStart(event) {
+            lastTouch.x = event.touches[0].clientX;
+            lastTouch.y = event.touches[0].clientY;
+        }
+
+        function onTouchMove(event) {
+            if (!isVideoPlaced) return;
+            
+            const deltaX = event.touches[0].clientX - lastTouch.x;
+            const deltaY = event.touches[0].clientY - lastTouch.y;
+            
+            videoMesh.position.x += deltaX * 0.01;
+            videoMesh.position.y -= deltaY * 0.01;
+            
+            lastTouch.x = event.touches[0].clientX;
+            lastTouch.y = event.touches[0].clientY;
+        }
+
+        function onMouseDown(event) {
+            lastTouch.x = event.clientX;
+            lastTouch.y = event.clientY;
+        }
+
+        function onMouseMove(event) {
+            if (!isVideoPlaced || event.buttons !== 1) return;
+            
+            const deltaX = event.clientX - lastTouch.x;
+            const deltaY = event.clientY - lastTouch.y;
+            
+            videoMesh.position.x += deltaX * 0.01;
+            videoMesh.position.y -= deltaY * 0.01;
+            
+            lastTouch.x = event.clientX;
+            lastTouch.y = event.clientY;
+        }
+
+        function animate() {
+            renderer.setAnimationLoop(render);
+        }
+
+        function render(timestamp, frame) {
+            if (frame) {
+                const referenceSpace = renderer.xr.getReferenceSpace();
+                const session = renderer.xr.getSession();
+
+                if (!hitTestSourceRequested) {
+                    session.requestReferenceSpace('viewer').then((referenceSpace) => {
+                        session.requestHitTestSource({ space: referenceSpace })
+                            .then((source) => hitTestSource = source);
+                    });
+                    hitTestSourceRequested = true;
+                }
+
+                if (hitTestSource) {
+                    const hitTestResults = frame.getHitTestResults(hitTestSource);
+                    if (hitTestResults.length && !isVideoPlaced) {
+                        const hit = hitTestResults[0];
+                        reticle.visible = true;
+                        reticle.matrix.fromArray(hit.getPose(referenceSpace).transform.matrix);
+                    } else {
+                        reticle.visible = false;
+                    }
+                }
+            }
+            renderer.render(scene, camera);
+        }
+    </script>
+</body>
+</html>
